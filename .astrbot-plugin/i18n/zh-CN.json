@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "display_name": "关键字回复",
+    "short_desc": "关键字自动回复（带 Web 面板）",
+    "desc": "关键字自动回复插件：一条规则四个字段（关键字、匹配类型、回复、格式），带 Web 面板可视化管理。"
+  },
+  "pages": {
+    "keyword-reply": {
+      "title": "关键字回复",
+      "description": "管理关键字、匹配类型、回复内容与回复格式"
+    }
+  }
+}

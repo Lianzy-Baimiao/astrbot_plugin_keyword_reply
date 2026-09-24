@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 运行时数据（规则实际存在 data/plugin_data/ 下，这里只防手滑）
+rules.json
+*.log
+
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

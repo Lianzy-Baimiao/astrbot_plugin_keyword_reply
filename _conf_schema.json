@@ -1,0 +1,51 @@
+{
+  "enabled": {
+    "description": "启用关键字自动回复",
+    "type": "bool",
+    "default": true,
+    "hint": "总开关。关掉后规则都还在（面板照样能改），只是不再自动回复。"
+  },
+  "ignore_case": {
+    "description": "匹配时忽略大小写",
+    "type": "bool",
+    "default": true,
+    "hint": "对英文关键字有用，中文无影响。正则匹配同样受此项控制（相当于加 IGNORECASE）。"
+  },
+  "markdown_mode": {
+    "description": "MD格式回复的发送方式",
+    "type": "string",
+    "default": "image",
+    "options": ["image", "text"],
+    "hint": "image = 把 markdown 渲染成图片发出（QQ 不支持富文本，图片最稳）；text = 直接把 markdown 原文当纯文本发。渲染失败会自动回落成纯文本。"
+  },
+  "cooldown": {
+    "description": "同一会话回复冷却（秒）",
+    "type": "int",
+    "default": 0,
+    "hint": "同一个群/私聊在这段时间内只回一次，防止刷屏。0 = 不限制。"
+  },
+  "stop_event": {
+    "description": "命中后阻止其他插件继续处理这条消息",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后关键字命中就结束这条消息的处理链，不会再触发 LLM 回复等。若希望关键字回复和别的插件同时生效，关掉它。"
+  },
+  "reply_in_private": {
+    "description": "私聊也自动回复",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉则只在群聊里生效。"
+  },
+  "whitelist": {
+    "description": "只在这些会话生效（白名单）",
+    "type": "list",
+    "default": [],
+    "hint": "填群号或 unified_msg_origin（如 339466990 或 napcat:GroupMessage:339466990），可多个。留空 = 所有会话都生效。"
+  },
+  "blacklist": {
+    "description": "这些会话不生效（黑名单）",
+    "type": "list",
+    "default": [],
+    "hint": "写法同白名单。黑名单优先于白名单。"
+  }
+}
