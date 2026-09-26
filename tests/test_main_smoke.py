@@ -113,6 +113,8 @@ class FakeEvent:
         sender_id="777",
         sender_name="张三",
         admin=True,
+        group_name=None,
+        bot=None,
     ):
         self.message_str = text
         self.unified_msg_origin = umo
@@ -121,6 +123,14 @@ class FakeEvent:
         self._sender_name = sender_name
         self._admin = admin
         self.stopped = False
+        # AstrBot 的群名挂在 message_obj.group.group_name 上（有的平台事件带，OneBot 不带）
+        self.message_obj = types.SimpleNamespace(
+            group=types.SimpleNamespace(
+                group_id=group_id, group_name=group_name
+            )
+        )
+        if bot is not None:
+            self.bot = bot
 
     def get_group_id(self):
         return self._group_id
@@ -147,19 +157,54 @@ class FakeEvent:
         return ("image", url)
 
 
+class FakeClient:
+    """平台客户端桩：只实现 call_action，够 main.py 取群列表 / 群信息用。"""
+
+    def __init__(self, group_list=None, group_info=None, fail=False):
+        self._group_list = group_list if group_list is not None else []
+        self._group_info = group_info or {}
+        self._fail = fail
+        self.calls = []
+
+    async def call_action(self, action, **kwargs):
+        self.calls.append((action, kwargs))
+        if self._fail:
+            raise RuntimeError("平台接口炸了")
+        if action == "get_group_list":
+            return self._group_list
+        if action == "get_group_info":
+            return self._group_info
+        raise AssertionError(f"没桩的接口: {action}")
+
+
+class FakePlatformInst:
+    def __init__(self, platform_id, client):
+        self._platform_id = platform_id
+        self._client = client
+
+    def meta(self):
+        return types.SimpleNamespace(id=self._platform_id, name="aiocqhttp")
+
+    def get_client(self):
+        return self._client
+
+
 class FakeContext:
-    def __init__(self):
+    def __init__(self, platform_insts=None):
         self.routes = []
+        self.platform_manager = types.SimpleNamespace(
+            get_insts=lambda: list(platform_insts or [])
+        )
 
     def register_web_api(self, path, handler, methods, desc):
         self.routes.append((path, handler, tuple(methods), desc))
 
 
-def make_plugin(config=None, fresh=True):
+def make_plugin(config=None, fresh=True, context=None):
     """建一个插件实例，数据目录每次换新的，避免用例互相污染。"""
     data_dir = tempfile.mkdtemp(prefix="kwreply-case-")
     _StarTools.get_data_dir = staticmethod(lambda name="": data_dir)
-    ctx = FakeContext()
+    ctx = context if context is not None else FakeContext()
     plugin = plugin_main.KeywordReplyPlugin(ctx, config if config is not None else {})
     if fresh:
         # 去掉 __init__ 塞的示例规则，用例自己造数据
@@ -196,6 +241,7 @@ def test_import_and_routes():
     # 面板需要的接口一个都不能少
     for suffix in (
         "/page/meta",
+        "/page/groups",
         "/page/rules",
         "/page/rules/toggle",
         "/page/rules/clear",
@@ -713,6 +759,122 @@ def test_page_scope_options_include_seen_sessions():
     assert SCOPE_GLOBAL in values
     assert "napcat:GroupMessage:1001" in values
     assert values[0] == SCOPE_GLOBAL  # 全局排最前
+
+
+# ---------------------------------------------------------------------------
+# 群名（面板范围下拉显示「群名（群号）」）
+# ---------------------------------------------------------------------------
+
+
+def test_scope_label_uses_group_name_from_event():
+    plugin, _ = make_plugin()
+    ev = FakeEvent(
+        "你好",
+        umo="napcat:GroupMessage:1001",
+        group_id="1001",
+        group_name="魔兽世界交流群",
+    )
+    run(collect(plugin.on_message(ev)))
+    assert plugin.groups.name_of("napcat:GroupMessage:1001") == "魔兽世界交流群"
+
+    with_request(FakeRequest(query={"scope": SCOPE_GLOBAL}))
+    ok, data, _ = unwrap(run(plugin.page.get_rules()))
+    assert ok
+    labels = {opt["value"]: opt["label"] for opt in data["scopes"]}
+    assert labels["napcat:GroupMessage:1001"] == "魔兽世界交流群（1001）"
+
+    # 事件不带群名时退回「群 群号」，不会留个空 label
+    plugin2, _ = make_plugin()
+    run(collect(plugin2.on_message(FakeEvent("你好", umo="napcat:GroupMessage:2002", group_id="2002"))))
+    with_request(FakeRequest(query={"scope": SCOPE_GLOBAL}))
+    ok, data, _ = unwrap(run(plugin2.page.get_rules()))
+    labels = {opt["value"]: opt["label"] for opt in data["scopes"]}
+    assert labels["napcat:GroupMessage:2002"] == "群 2002"
+
+
+def test_learn_group_name_via_platform_api():
+    plugin, _ = make_plugin()
+    client = FakeClient(group_info={"group_id": 1001, "group_name": "活动通知群", "member_count": 300})
+    run(plugin._learn_group_name(client, "napcat:GroupMessage:1001", "1001", "napcat"))
+    assert plugin.groups.name_of("napcat:GroupMessage:1001") == "活动通知群"
+    assert client.calls[0][0] == "get_group_info"
+    assert client.calls[0][1]["group_id"] == 1001  # 数字群号（OneBot 要 int）
+
+    # 平台查不到名字：静默，不写空名
+    err = FakeClient(fail=True)
+    run(plugin._learn_group_name(err, "napcat:GroupMessage:1002", "1002", "napcat"))
+    assert plugin.groups.name_of("napcat:GroupMessage:1002") == ""
+    empty = FakeClient(group_info={})
+    run(plugin._learn_group_name(empty, "napcat:GroupMessage:1003", "1003", "napcat"))
+    assert plugin.groups.name_of("napcat:GroupMessage:1003") == ""
+
+
+def test_page_groups_endpoint_refreshes_from_platform():
+    client = FakeClient(
+        group_list=[
+            {"group_id": 1001, "group_name": "魔兽世界交流群", "member_count": 486},
+            {"group_id": 2002, "group_name": "活动通知群", "member_count": 120},
+        ]
+    )
+    ctx = FakeContext(platform_insts=[FakePlatformInst("napcat", client)])
+    plugin, _ = make_plugin(context=ctx)
+    run(plugin.store.add({"keyword": "a", "match": "exact", "reply": "1"}, "napcat:GroupMessage:1001"))
+
+    with_request(FakeRequest(query={"refresh": "1"}))
+    ok, data, _ = unwrap(run(plugin.page.get_groups()))
+    assert ok
+    assert data["refreshed"] == 2  # 两个群都是新名字
+    assert data["named"] == 2 and data["total"] == 2
+    by_value = {item["value"]: item for item in data["groups"]}
+    assert by_value["napcat:GroupMessage:1001"]["group_name"] == "魔兽世界交流群"
+    assert by_value["napcat:GroupMessage:1001"]["count"] == 1  # 有规则
+    assert by_value["napcat:GroupMessage:1001"]["source"] == "rule"
+    assert by_value["napcat:GroupMessage:2002"]["member_count"] == 120
+    assert by_value["napcat:GroupMessage:2002"]["source"] == "platform"
+    # 有名字的排前面（按名字排序）
+    assert data["groups"][0]["group_name"] == "活动通知群"
+    # 刷新后缓存里就有了：不带 refresh 再拉一次，不打平台接口也没有新变化
+    with_request(FakeRequest())
+    ok, again, _ = unwrap(run(plugin.page.get_groups()))
+    assert ok and again["refreshed"] == 0
+    assert {item["value"] for item in again["groups"]} == {
+        "napcat:GroupMessage:1001",
+        "napcat:GroupMessage:2002",
+    }
+
+    # 平台接口炸了也不能让面板开不了
+    bad_ctx = FakeContext(platform_insts=[FakePlatformInst("napcat", FakeClient(fail=True))])
+    plugin_bad, _ = make_plugin(context=bad_ctx)
+    with_request(FakeRequest(query={"refresh": "1"}))
+    ok, data, _ = unwrap(run(plugin_bad.page.get_groups()))
+    assert ok and data["refreshed"] == 0 and data["groups"] == []
+
+    # 没有平台管理器（老版本 AstrBot / 单测桩）也不报错
+    plugin_plain, _ = make_plugin()
+    plugin_plain.context.platform_manager = types.SimpleNamespace()
+    assert run(plugin_plain.refresh_group_names(force=True)) == 0
+
+
+def test_page_groups_cached_labels_without_refresh():
+    plugin, _ = make_plugin()
+    run(collect(plugin.on_message(FakeEvent("你好", umo="napcat:GroupMessage:1001", group_id="1001", group_name="交流群"))))
+    run(plugin.store.add({"keyword": "a", "match": "exact", "reply": "1"}, "napcat:GroupMessage:1001"))
+    with_request(FakeRequest())
+    ok, data, _ = unwrap(run(plugin.page.get_groups()))
+    assert ok
+    assert data["refreshed"] == 0  # 没带 refresh 就不打平台接口
+    assert [item["value"] for item in data["groups"]] == ["napcat:GroupMessage:1001"]
+    assert data["groups"][0]["label"] == "交流群（1001）"
+
+
+def test_group_name_cache_survives_restart():
+    plugin, ctx = make_plugin()
+    run(collect(plugin.on_message(FakeEvent("你好", umo="napcat:GroupMessage:1001", group_id="1001", group_name="交流群"))))
+    assert plugin.groups.path.is_file()
+    # 同一数据目录再起一个实例：名字还在（面板不用等新消息）
+    again = plugin_main.KeywordReplyPlugin(ctx, {})
+    assert again.groups.name_of("napcat:GroupMessage:1001") == "交流群"
+    assert again.groups.label("napcat:GroupMessage:1001") == "交流群（1001）"
 
 
 def test_terminate_flushes():

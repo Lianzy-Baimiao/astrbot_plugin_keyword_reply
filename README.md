@@ -20,7 +20,8 @@ AstrBot WebUI → 插件 → 关键字回复 → 打开面板。
 面板能做的事：
 
 - 增删改规则，四个字段都是下拉或输入框，匹配类型和格式不用记英文枚举
-- 按范围切换：`全局（所有会话）` 或某个具体的群/私聊
+- 按范围切换：`全局（所有会话）` 或某个具体的群/私聊，**下拉里显示群名**（`魔兽世界交流群（339466990）`）
+- **选择群…**：按群名 / 群号搜索机器人所在的全部群，选中即切过去 —— 不用再对着群号猜哪个群
 - 搜索关键字和回复内容
 - 启用 / 停用单条规则（停用不删数据）
 - **试一句话**：输入一段文本，看它命中哪几条规则、实际会回哪条、占位符渲染成什么样
@@ -29,6 +30,18 @@ AstrBot WebUI → 插件 → 关键字回复 → 打开面板。
 
 面板前端是单个 `pages/keyword-reply/index.html`，原生 JS，不需要构建步骤。数据通过
 `window.AstrBotPluginPage` 桥接调用后端接口，不自己拼 URL、不带 token。
+
+## 群名是怎么来的
+
+QQ 的 OneBot 群消息事件本身不带群名，所以「群号 → 群名」由插件自己攒，三种来源：
+
+1. **收消息时**：事件自带群名的平台（Telegram / Discord / QQ 官方等）直接用，写进缓存
+2. **首次见到某个群**：后台异步问一次 OneBot `get_group_info`（不阻塞消息处理，每个群只问一次）
+3. **面板点「刷新群列表」**：调一次 `get_group_list`，把机器人所在的**所有**群一次补齐 ——
+   刚装好插件、群里还没说过话的群也能按群名挑到（30 分钟内重复点不会重复打平台接口）
+
+名字要在同一 umo 拼法下匹配才用得上，换平台实例名（如 `napcat` → `default_666666666`）时
+会按「群号 + 平台」再兜一次。实在查不到名字就显示 `群 群号`，功能不受影响。
 
 ## 匹配类型
 
@@ -118,8 +131,31 @@ AstrBot WebUI → 插件 → 关键字回复 → 打开面板。
 ## 数据存放
 
 ```
-AstrBot/data/plugin_data/astrbot_plugin_keyword_reply/rules.json
+AstrBot/data/plugin_data/astrbot_plugin_keyword_reply/rules.json    规则
+AstrBot/data/plugin_data/astrbot_plugin_keyword_reply/groups.json   群名缓存（展示用，可删）
 ```
+
+`groups.json` 结构：
+
+```json
+{
+  "version": 1,
+  "last_refresh": 1766000000.0,
+  "groups": {
+    "napcat:GroupMessage:339466990": {
+      "platform_id": "napcat",
+      "group_id": "339466990",
+      "group_name": "魔兽世界交流群",
+      "member_count": 486,
+      "source": "api",
+      "updated_at": 1766000000.0
+    }
+  }
+}
+```
+
+`source` 是名字来源（`event` = 事件自带，`api` = 平台接口查的）。缓存最多留 800 条，超了按
+`updated_at` 淘汰最旧的；删掉整个文件也只是清掉名字（重新显示成群号），不影响规则。
 
 结构：
 
@@ -143,11 +179,13 @@ AstrBot/data/plugin_data/astrbot_plugin_keyword_reply/rules.json
 ```bash
 python tests/test_rules.py
 python tests/test_store.py
+python tests/test_groups.py
 python tests/test_main_smoke.py
 ```
 
 `test_main_smoke.py` 会把 `astrbot.*` 塞进 `sys.modules` 再导入 `main.py` 和 `page.py`，
-所以语法错误、名字写错、面板接口回归本地就能拦下来。三个文件全绿打印 OK。
+所以语法错误、名字写错、面板接口回归本地就能拦下来。`test_groups.py` 是群名缓存的纯逻辑
+单测（平台返回值的三种形状、坏文件恢复、淘汰策略都在里面）。四个文件全绿打印 OK。
 
 代码分工：
 
@@ -155,8 +193,9 @@ python tests/test_main_smoke.py
 | --- | --- | --- |
 | `keyword_reply/rules.py` | 规则归一化、匹配、排序、占位符 | 否 |
 | `keyword_reply/store.py` | 存盘、查询、导入导出 | 否 |
+| `keyword_reply/groups.py` | umo 解析、群名缓存与展示文字 | 否 |
 | `keyword_reply/page.py` | Web 面板后端接口 | 是（有 quart 回落） |
-| `main.py` | 消息钩子、聊天命令 | 是 |
+| `main.py` | 消息钩子、聊天命令、向平台取群名 | 是 |
 | `pages/keyword-reply/index.html` | 面板前端 | — |
 
 `page.py` 同时兼容 AstrBot >= 4.26 的 `astrbot.api.web` 和更早版本的裸 quart，两套

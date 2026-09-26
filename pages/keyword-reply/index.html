@@ -167,6 +167,25 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
 #toast.show { opacity: 1; }
 #toast.err { background: var(--danger); color: #fff; }
 
+/* ---------- 选择群 ---------- */
+.pick-list {
+  max-height: 50vh; overflow: auto; margin-top: 10px;
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.pick-item {
+  display: flex; gap: 10px; align-items: center;
+  padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--border);
+}
+.pick-item:last-child { border-bottom: none; }
+.pick-item:hover { background: var(--accent-soft); }
+.pick-item.on { background: var(--accent-soft); }
+.pick-item .nm {
+  flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.pick-item .sub { color: var(--text2); font-size: 12px; white-space: nowrap; }
+.pick-list .empty { padding: 14px; text-align: center; color: var(--text2); }
+
 /* ---------- 测试结果 ---------- */
 .test-hit {
   border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; margin-top: 8px;
@@ -202,6 +221,7 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
         <label for="scopeSel">生效范围</label>
         <select id="scopeSel"></select>
       </div>
+      <button id="btnPick">选择群…</button>
       <div class="field grow">
         <label for="searchBox">搜索关键字或回复内容</label>
         <input type="text" id="searchBox" placeholder="输入后自动过滤">
@@ -211,6 +231,7 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
     </div>
     <p class="hint" style="margin:10px 0 0">
       全局规则对所有会话生效；选中某个会话时，该会话的规则会盖掉同名的全局规则。
+      下拉里只列有规则或说过话的会话，点「选择群…」可以按群名搜索机器人所在的全部群。
     </p>
   </div>
 
@@ -285,6 +306,25 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
   </div>
 </div>
 
+<!-- 选择群 -->
+<div class="modal-mask" id="pickMask" hidden>
+  <div class="modal">
+    <h2>按群名选择生效范围</h2>
+    <div class="row">
+      <div class="field grow">
+        <label for="pickSearch">搜索群名 / 群号</label>
+        <input type="text" id="pickSearch" placeholder="例：魔兽 或 339466990">
+      </div>
+      <button id="btnPickRefresh">刷新群列表</button>
+    </div>
+    <div class="pick-list" id="pickList"></div>
+    <div class="modal-foot">
+      <span class="hint" id="pickHint" style="margin-right:auto"></span>
+      <button id="pickClose">关闭</button>
+    </div>
+  </div>
+</div>
+
 <!-- 试一句话 -->
 <div class="modal-mask" id="testMask" hidden>
   <div class="modal">
@@ -330,6 +370,18 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
 </div>
 
 <div id="toast"></div>
+<div class="modal-mask" id="modalMask" hidden>
+  <div class="modal">
+    <h2 id="modalTitle"></h2>
+    <p id="modalMsg" style="white-space:pre-line;color:var(--muted,#9aa)"></p>
+    <input id="modalInput" type="text" hidden
+      style="width:100%;box-sizing:border-box;padding:6px 8px;margin-top:6px">
+    <div class="modal-foot">
+      <button class="primary" id="modalOk">确定</button>
+      <button id="modalCancel">取消</button>
+    </div>
+  </div>
+</div>
 
 <script>
 (function () {
@@ -343,7 +395,12 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
     scope: "global",
     rules: [],
     meta: { match_types: [], formats: [] },
-    editing: null
+    editing: null,
+    // 「选择群」面板：机器人所在群 + 见过的会话 + 已有规则的会话
+    groups: [],
+    groupsLoaded: false,
+    // 从「选择群」里挑的、后端 scopes 列表里还没有的会话（挑完要留在下拉里）
+    extraScopes: {}
   };
 
   // ---------- 小工具 ----------
@@ -363,6 +420,40 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
+  }
+
+  // 面板跑在 AstrBot 仪表盘的 iframe 里，浏览器会屏蔽 window.prompt/confirm，
+  // 所以用页内弹窗替代（否则确认框点了没反应）。
+  function _modal(opts) {
+    return new Promise(function (resolve) {
+      var mask = byId("modalMask");
+      var input = byId("modalInput");
+      byId("modalTitle").textContent = opts.title || "";
+      byId("modalMsg").textContent = opts.message || "";
+      input.hidden = !opts.prompt;
+      if (opts.prompt) { input.value = opts.value || ""; }
+      mask.hidden = false;
+      if (opts.prompt) { input.focus(); input.select(); }
+      function done(val) {
+        mask.hidden = true;
+        byId("modalOk").onclick = null;
+        byId("modalCancel").onclick = null;
+        input.onkeydown = null;
+        resolve(val);
+      }
+      byId("modalOk").onclick = function () { done(opts.prompt ? input.value : true); };
+      byId("modalCancel").onclick = function () { done(opts.prompt ? null : false); };
+      input.onkeydown = function (e) {
+        if (e.key === "Enter") { e.preventDefault(); done(input.value); }
+        else if (e.key === "Escape") { e.preventDefault(); done(null); }
+      };
+    });
+  }
+  function promptModal(title, message, value) {
+    return _modal({ prompt: true, title: title, message: message, value: value || "" });
+  }
+  function confirmModal(message, title) {
+    return _modal({ prompt: false, title: title || "确认", message: message });
   }
 
   // 后端统一返回 {status, message, data}；status 不是 ok 就抛出 message。
@@ -502,12 +593,108 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
     return apiGet("page/rules", { scope: state.scope }).then(function (d) {
       state.rules = d.rules || [];
       state.scope = d.scope || state.scope;
-      fillSelect(byId("scopeSel"), (d.scopes || []).map(function (s) {
-        return { value: s.value, label: s.label + "（" + s.count + "）" };
-      }), state.scope);
+      renderScopes(d.scopes || []);
       renderStats(d.stats || {}, d.enabled !== false);
       renderRows();
     });
+  }
+
+  // 下拉选项 = 后端给的 scopes（有规则 / 见过话的会话，带群名）+ 手动挑过但还没有规则的
+  function renderScopes(scopes) {
+    var items = scopes.map(function (s) {
+      return { value: s.value, label: s.label, count: s.count || 0 };
+    });
+    Object.keys(state.extraScopes).forEach(function (umo) {
+      var exists = items.some(function (it) { return it.value === umo; });
+      if (!exists) {
+        items.push({ value: umo, label: state.extraScopes[umo], count: 0 });
+      }
+    });
+    fillSelect(byId("scopeSel"), items.map(function (it) {
+      return { value: it.value, label: it.label + "（" + it.count + "）" };
+    }), state.scope);
+  }
+
+  // ---------- 选择群 ----------
+
+  function openPick() {
+    byId("pickSearch").value = "";
+    byId("pickMask").hidden = false;
+    renderPickList();
+    byId("pickSearch").focus();
+    if (!state.groupsLoaded) loadGroups(false).catch(fail);
+  }
+
+  function loadGroups(refresh) {
+    return apiGet("page/groups", refresh ? { refresh: "1" } : {}).then(function (d) {
+      state.groups = d.groups || [];
+      state.groupsLoaded = true;
+      renderPickList();
+      setPickHint(d);
+      if (refresh) {
+        toast("已刷新：" + (d.named || 0) + " 个群有名称，共 " + (d.total || 0) + " 个会话");
+      }
+      return state.groups;
+    });
+  }
+
+  function setPickHint(d) {
+    var hint = byId("pickHint");
+    if (!hint) return;
+    var named = d.named || 0;
+    var total = d.total || 0;
+    if (!total) {
+      hint.textContent = "还没有可选的群：群里说句话，或点「刷新群列表」。";
+      return;
+    }
+    hint.textContent = "共 " + total + " 个会话，其中 " + named + " 个已取到群名（取不到时显示群号）";
+  }
+
+  function pickSourceLabel(source) {
+    if (source === "rule") return "有规则";
+    if (source === "platform") return "机器人所在";
+    return "见过";
+  }
+
+  function renderPickList() {
+    var box = byId("pickList");
+    if (!state.groupsLoaded) {
+      box.innerHTML = '<div class="empty">正在加载群列表…</div>';
+      return;
+    }
+    var kw = (byId("pickSearch").value || "").trim().toLowerCase();
+    var rows = state.groups.filter(function (g) {
+      if (!kw) return true;
+      return (String(g.label) + " " + (g.group_name || "") + " " + (g.group_id || ""))
+        .toLowerCase().indexOf(kw) >= 0;
+    });
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty">没有匹配的会话。换个词，或点「刷新群列表」重新取一遍。</div>';
+      return;
+    }
+    box.innerHTML = rows.map(function (g) {
+      var sub = [];
+      if (g.group_id) sub.push("群号 " + g.group_id);
+      if (g.member_count) sub.push(g.member_count + " 人");
+      sub.push(g.count ? "规则 " + g.count + " 条" : "暂无规则");
+      return '<div class="pick-item' + (g.value === state.scope ? " on" : "") +
+        '" data-umo="' + esc(g.value) + '">' +
+        '<span class="nm">' + esc(g.group_name || g.label) + "</span>" +
+        '<span class="sub">' + esc(sub.join(" · ")) + "</span>" +
+        '<span class="tag">' + esc(pickSourceLabel(g.source)) + "</span>" +
+        "</div>";
+    }).join("");
+  }
+
+  function pickGroup(umo) {
+    var row = state.groups.filter(function (g) { return g.value === umo; })[0];
+    if (!row) return;
+    state.extraScopes[umo] = row.label;  // 后端 scopes 还没这条时，也留在下拉里
+    state.scope = umo;
+    byId("pickMask").hidden = true;
+    loadRules().then(function () {
+      toast("已切到 " + row.label);
+    }).catch(fail);
   }
 
   // ---------- 编辑弹窗 ----------
@@ -549,9 +736,11 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
       req = apiPost("page/rules", payload).catch(function (err) {
         // 后端把「同关键字 + 同匹配类型」判重了，问一下要不要覆盖
         if (!/已存在同样的规则/.test(err.message || "")) throw err;
-        if (!window.confirm(err.message + "\n\n覆盖掉原来那条？")) throw new Error("已取消");
-        payload.overwrite = true;
-        return apiPost("page/rules", payload);
+        return confirmModal(err.message + "\n\n覆盖掉原来那条？", "覆盖确认").then(function (ok) {
+          if (!ok) throw new Error("已取消");
+          payload.overwrite = true;
+          return apiPost("page/rules", payload);
+        });
       });
     }
     req.then(function () {
@@ -583,10 +772,12 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
       return;
     }
     if (act === "del") {
-      if (!window.confirm("删除规则「" + rule.keyword + "」？")) return;
-      apiPost("page/rules", { scope: state.scope, ids: [id], _method: "DELETE" })
-        .then(function () { toast("已删除"); return loadRules(); })
-        .catch(fail);
+      confirmModal("删除规则「" + rule.keyword + "」？", "删除规则").then(function (ok) {
+        if (!ok) return;
+        apiPost("page/rules", { scope: state.scope, ids: [id], _method: "DELETE" })
+          .then(function () { toast("已删除"); return loadRules(); })
+          .catch(fail);
+      });
     }
   }
 
@@ -665,6 +856,16 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
     byId("btnReload").addEventListener("click", function () {
       loadRules().then(function () { toast("已刷新"); }).catch(fail);
     });
+    byId("btnPick").addEventListener("click", openPick);
+    byId("pickClose").addEventListener("click", function () { byId("pickMask").hidden = true; });
+    byId("pickSearch").addEventListener("input", renderPickList);
+    byId("btnPickRefresh").addEventListener("click", function () {
+      loadGroups(true).catch(fail);
+    });
+    byId("pickList").addEventListener("click", function (e) {
+      var item = e.target && e.target.closest ? e.target.closest(".pick-item") : null;
+      if (item) pickGroup(item.getAttribute("data-umo"));
+    });
     byId("btnNew").addEventListener("click", function () { openEdit(null); });
     byId("editCancel").addEventListener("click", function () { byId("editMask").hidden = true; });
     byId("editSave").addEventListener("click", saveEdit);
@@ -687,22 +888,24 @@ html[data-theme="dark"] .tag.md { color: #c4b5fd; }
 
     byId("btnClear").addEventListener("click", function () {
       var label = byId("scopeSel").selectedOptions[0];
-      if (!window.confirm("清空「" + (label ? label.textContent : state.scope) +
-        "」下的所有规则？此操作不可撤销。")) return;
-      apiPost("page/rules/clear", { scope: state.scope, confirm: "1" })
-        .then(function (d) { toast("已清空 " + d.cleared + " 条"); return loadRules(); })
-        .catch(fail);
+      confirmModal("清空「" + (label ? label.textContent : state.scope) +
+        "」下的所有规则？此操作不可撤销。", "清空规则").then(function (ok) {
+        if (!ok) return;
+        apiPost("page/rules/clear", { scope: state.scope, confirm: "1" })
+          .then(function (d) { toast("已清空 " + d.cleared + " 条"); return loadRules(); })
+          .catch(fail);
+      });
     });
 
     // 点遮罩空白处关闭弹窗
-    ["editMask", "testMask", "importMask"].forEach(function (id) {
+    ["editMask", "testMask", "importMask", "pickMask"].forEach(function (id) {
       byId(id).addEventListener("click", function (e) {
         if (e.target === this) this.hidden = true;
       });
     });
     document.addEventListener("keydown", function (e) {
       if (e.key !== "Escape") return;
-      ["editMask", "testMask", "importMask"].forEach(function (id) { byId(id).hidden = true; });
+      ["editMask", "testMask", "importMask", "pickMask"].forEach(function (id) { byId(id).hidden = true; });
     });
   }
 

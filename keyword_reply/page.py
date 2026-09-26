@@ -56,6 +56,12 @@ except (ImportError, AttributeError):  # 老版本回落到 quart
         )
 
 
+from .groups import (
+    REFRESH_INTERVAL,
+    GroupNameResolver,
+    session_label,
+    split_umo,
+)
 from .rules import (
     FORMAT_LABELS,
     FORMAT_TYPES,
@@ -89,6 +95,7 @@ class KeywordPageController:
     def register_routes(self) -> None:
         routes: list[tuple[str, Callable[..., Any], list[str], str]] = [
             ("/page/meta", self.get_meta, ["GET"], "关键字回复：枚举与字段上限"),
+            ("/page/groups", self.get_groups, ["GET"], "关键字回复：会话列表（带群名）"),
             ("/page/rules", self.get_rules, ["GET"], "关键字回复：规则列表"),
             ("/page/rules", self.create_rule, ["POST"], "关键字回复：新增规则"),
             ("/page/rules", self.update_rule, ["PUT"], "关键字回复：修改规则"),
@@ -221,22 +228,111 @@ class KeywordPageController:
             }
         )
 
-    def _scope_options(self) -> list[dict[str, Any]]:
-        """范围下拉：全局 + 已有规则的会话 + 插件见过的活跃会话。"""
-        known = {
+    def _resolver(self) -> GroupNameResolver | None:
+        """群名缓存；插件实例没挂上（老版本 / 单测）时返回 None，一切照旧。"""
+        if self.plugin is None:
+            return None
+        resolver = getattr(self.plugin, "groups", None)
+        return resolver if isinstance(resolver, GroupNameResolver) else None
+
+    def _session_options(self, include_platform: bool = False) -> list[dict[str, Any]]:
+        """可选的会话列表，每个都带群名。
+
+        三个来源合并去重：
+        - rule      已经有规则的会话（面板原本就只列这些）
+        - seen      收消息时记下的会话（插件见过的群 / 私聊）
+        - platform  平台适配器报上来的群（include_platform=True 才带上，这样刚装插件、
+                    群里还没说过话也能按群名挑到）
+
+        名字来自 GroupNameResolver；查不到就退回「群 群号」。
+        """
+        resolver = self._resolver()
+        counts = {
             name: len(self.store.list_rules(name)) for name in self.store.scope_names()
         }
         seen: dict[str, str] = {}
         if self.plugin is not None:
             seen = dict(getattr(self.plugin, "seen_sessions", {}) or {})
+
+        rows: dict[str, dict[str, Any]] = {}
+
+        def add(umo: str, source: str, count: int = 0) -> None:
+            if not umo or umo == SCOPE_GLOBAL:
+                return
+            platform_id, message_type, session_id = split_umo(umo)
+            entry = resolver.get(umo) if resolver is not None else None
+            row = rows.get(umo)
+            if row is None:
+                row = {
+                    "value": umo,
+                    "label": session_label(umo, entry) or seen.get(umo) or umo,
+                    "platform_id": platform_id,
+                    "message_type": message_type,
+                    "group_id": str((entry or {}).get("group_id") or session_id),
+                    "group_name": str((entry or {}).get("group_name") or ""),
+                    "member_count": int((entry or {}).get("member_count") or 0),
+                    "count": count,
+                    "source": source,
+                }
+                rows[umo] = row
+            if count and count != row["count"]:
+                row["count"] = count
+                row["source"] = "rule"
+
+        for name, count in counts.items():
+            add(name, "rule", count)
         for umo in seen:
-            known.setdefault(umo, 0)
-        out: list[dict[str, Any]] = []
-        for name, count in known.items():
-            label = "全局（所有会话）" if name == SCOPE_GLOBAL else (seen.get(name) or name)
-            out.append({"value": name, "label": label, "count": count})
-        out.sort(key=lambda item: (item["value"] != SCOPE_GLOBAL, item["label"]))
+            add(umo, "seen")
+        if include_platform and resolver is not None:
+            for umo in resolver.entries():
+                add(umo, "platform")
+
+        out = list(rows.values())
+        # 有名字的按名字排前面、按名字排序，没名字的按群号排后面，面板上一眼能找到
+        out.sort(
+            key=lambda item: (
+                not bool(item["group_name"]),
+                item["group_name"] or "",
+                item["group_id"] or item["label"],
+            )
+        )
         return out
+
+    def _scope_options(self) -> list[dict[str, Any]]:
+        """范围下拉：全局 + 已有规则的会话 + 插件见过的活跃会话（都带群名）。"""
+        options: list[dict[str, Any]] = [
+            {"value": SCOPE_GLOBAL, "label": "全局（所有会话）", "count": len(self.store.list_rules(SCOPE_GLOBAL))}
+        ]
+        options.extend(self._session_options(include_platform=False))
+        return options
+
+    async def get_groups(self) -> Any:
+        """面板「选择群」用的列表：机器人在的群 + 见过的会话 + 已有规则的会话。
+
+        ``refresh=1`` 时先去平台要一遍群列表（OneBot get_group_list）把群名补齐，
+        这样刚装好插件、群里还没说过话也能按群名挑；平时走本地缓存不打平台接口。
+        """
+        refresh = self._query_get("refresh", "0").strip().lower() in {"1", "true", "yes"}
+        refreshed = 0
+        resolver = self._resolver()
+        if refresh and self.plugin is not None:
+            refresher = getattr(self.plugin, "refresh_group_names", None)
+            if callable(refresher):
+                try:
+                    refreshed = int(await refresher(force=True) or 0)
+                except Exception as exc:  # 拉群列表失败不影响面板打开
+                    _log_warn(f"刷新群列表失败: {exc}")
+        groups = self._session_options(include_platform=True)
+        named = len([item for item in groups if item["group_name"]])
+        return self._ok(
+            {
+                "groups": groups,
+                "named": named,
+                "total": len(groups),
+                "refreshed": refreshed,
+                "refresh_interval": REFRESH_INTERVAL,
+            }
+        )
 
     def _plugin_enabled(self) -> bool:
         if self.plugin is None:

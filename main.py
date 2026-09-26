@@ -4,6 +4,10 @@
 规则存在 data/plugin_data/astrbot_plugin_keyword_reply/rules.json，分「全局」和
 「按会话」两级：会话规则优先，同一关键字会盖掉全局那条。
 
+群名缓存在同目录的 groups.json：OneBot 的群消息事件不带群名，所以面板里的范围下拉
+原来只有一串群号。这里在收消息时记名字（有群名的平台直接用事件里的），拿不到就后台
+问一次 get_group_info；面板点「刷新群列表」还会调 get_group_list 一次性补齐所有群名。
+
 面板在 AstrBot WebUI → 插件 → 关键字回复 → 打开面板（需要 AstrBot >= 4.24.1）。
 聊天里也能管：/关键字 帮助。
 """
@@ -23,6 +27,12 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
+from keyword_reply.groups import (
+    SOURCE_API,
+    GroupNameResolver,
+    parse_group_info,
+    parse_group_list,
+)
 from keyword_reply.page import KeywordPageController
 from keyword_reply.rules import (
     FORMAT_MARKDOWN,
@@ -63,6 +73,9 @@ class KeywordReplyPlugin(Star):
         data_dir.mkdir(parents=True, exist_ok=True)
         self.store = RuleStore(data_dir / "rules.json")
         self.store.load()
+        # 群号 → 群名（面板范围下拉显示用，OneBot 的事件不带群名，只能自己攒）
+        self.groups = GroupNameResolver(data_dir / "groups.json")
+        self.groups.load()
 
         # 首次启动塞两条示例，面板不至于空白
         if not self.store.list_rules(SCOPE_GLOBAL) and not self.store.scope_names()[1:]:
@@ -74,6 +87,8 @@ class KeywordReplyPlugin(Star):
 
         # 面板里「范围」下拉要能列出机器人见过的会话：umo -> 显示名
         self.seen_sessions: dict[str, str] = {}
+        # 正在后台问群名的任务：umo -> task（同一个群只问一次）
+        self._group_name_tasks: dict[str, asyncio.Task] = {}
         # 冷却：umo -> 上次回复时间
         self._last_reply: dict[str, float] = {}
 
@@ -146,14 +161,158 @@ class KeywordReplyPlugin(Star):
 
     def _remember_session(self, event: AstrMessageEvent) -> None:
         umo = event.unified_msg_origin
-        if not umo or umo in self.seen_sessions:
+        if not umo:
             return
         gid = str(event.get_group_id() or "")
-        self.seen_sessions[umo] = f"群 {gid}" if gid else f"私聊 {event.get_sender_id()}"
-        # 只留最近 200 个，免得长期运行越攒越多
-        if len(self.seen_sessions) > 200:
-            for key in list(self.seen_sessions)[:50]:
-                self.seen_sessions.pop(key, None)
+        if umo not in self.seen_sessions:
+            self.seen_sessions[umo] = f"群 {gid}" if gid else f"私聊 {event.get_sender_id()}"
+            # 只留最近 200 个，免得长期运行越攒越多
+            if len(self.seen_sessions) > 200:
+                for key in list(self.seen_sessions)[:50]:
+                    self.seen_sessions.pop(key, None)
+
+        # 顺手把群名记下来：Telegram / Discord / QQ 官方的事件自带群名，直接存；
+        # OneBot 的事件没有，留给后台任务去问平台（每个群只问一次）。
+        self.groups.remember(
+            umo,
+            group_id=gid,
+            group_name=self._event_group_name(event),
+            platform_id=self._event_platform_id(event),
+        )
+        if gid and not self.groups.name_of(umo):
+            self._schedule_group_name_lookup(event, umo, gid)
+
+    # ------------------------------------------------------------------
+    # 群名（面板「生效范围」下拉要显示「群名（群号）」而不是光秃秃一串数字）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _event_group_name(event: AstrMessageEvent) -> str:
+        """事件里自带的群名，没有就返回空串（不同平台字段不一样，一律 getattr）。"""
+        group = getattr(getattr(event, "message_obj", None), "group", None)
+        return str(getattr(group, "group_name", "") or "").strip()
+
+    @staticmethod
+    def _event_platform_id(event: AstrMessageEvent) -> str:
+        """事件所属平台的实例 id（umo 冒号前那一段）。"""
+        getter = getattr(event, "get_platform_id", None)
+        if callable(getter):
+            try:
+                return str(getter() or "")
+            except Exception:
+                pass
+        meta = getattr(event, "platform_meta", None)
+        return str(getattr(meta, "id", "") or "")
+
+    def _schedule_group_name_lookup(
+        self, event: AstrMessageEvent, umo: str, gid: str
+    ) -> None:
+        """后台问一次群名（OneBot get_group_info），问不到就保持「群 群号」。
+
+        只在首次见到某个群时跑，且不阻塞消息处理。抓取用的客户端对象先从 event 上
+        取好再进任务，任务里不再碰 event —— 事件在 handler 结束后可能就作废了。
+        """
+        if umo in self._group_name_tasks:
+            return
+        client = getattr(event, "bot", None) or getattr(event, "client", None)
+        if client is None or not callable(getattr(client, "call_action", None)):
+            return
+        try:
+            task = asyncio.create_task(
+                self._learn_group_name(client, umo, gid, self._event_platform_id(event))
+            )
+        except RuntimeError:  # 没有运行中的事件循环（同步调用场景）
+            return
+        self._group_name_tasks[umo] = task
+        task.add_done_callback(lambda _t, key=umo: self._group_name_tasks.pop(key, None))
+
+    async def _learn_group_name(
+        self, client: Any, umo: str, gid: str, platform_id: str
+    ) -> None:
+        """问一次平台群名并写进缓存。失败静默（面板里大不了还是个群号）。"""
+        try:
+            result = await client.call_action(
+                "get_group_info",
+                group_id=int(gid) if str(gid).isdigit() else gid,
+            )
+        except Exception as exc:
+            logger.debug(f"[keyword_reply] 查询群 {gid} 名称失败: {exc}")
+            return
+        info = parse_group_info(result)
+        name = str(info.get("group_name") or "").strip()
+        if not name:
+            return
+        self.groups.remember(
+            umo,
+            group_id=gid or str(info.get("group_id") or ""),
+            group_name=name,
+            platform_id=platform_id,
+            member_count=info.get("member_count"),
+            source=SOURCE_API,
+        )
+
+    @staticmethod
+    def _platform_instance_id(inst: Any) -> str:
+        meta = getattr(inst, "meta", None)
+        if callable(meta):
+            try:
+                return str(getattr(meta(), "id", "") or "")
+            except Exception:
+                pass
+        config = getattr(inst, "config", None)
+        if isinstance(config, dict):
+            return str(config.get("id") or "")
+        return ""
+
+    def _platform_clients(self):
+        """列出 (平台实例 id, 客户端对象)。取不到平台管理器时一个都不返回。"""
+        manager = getattr(self.context, "platform_manager", None)
+        getter = getattr(manager, "get_insts", None)
+        if not callable(getter):
+            return
+        try:
+            insts = list(getter() or [])
+        except Exception as exc:  # 平台还没加载完之类的
+            logger.debug(f"[keyword_reply] 取平台实例失败: {exc}")
+            return
+        for inst in insts:
+            client = None
+            get_client = getattr(inst, "get_client", None)
+            if callable(get_client):
+                try:
+                    client = get_client()
+                except Exception:
+                    client = None
+            if client is None:
+                client = getattr(inst, "bot", None) or getattr(inst, "client", None)
+            if client is not None:
+                yield self._platform_instance_id(inst), client
+
+    async def refresh_group_names(self, force: bool = False, interval: int = 300) -> int:
+        """去平台要一遍群列表（OneBot get_group_list），把群名补进缓存。
+
+        面板点「刷新群列表」时带 force=True；平时按 interval 秒节流，避免连点把平台
+        接口打爆。各平台适配器形状不一，拿不到就静默跳过。返回有变化的群数量。
+        """
+        if not force and not self.groups.needs_refresh(interval):
+            return 0
+        changed = 0
+        for platform_id, client in self._platform_clients():
+            action = getattr(client, "call_action", None)
+            if not callable(action):
+                continue
+            try:
+                result = await action("get_group_list")
+            except Exception as exc:
+                logger.debug(
+                    f"[keyword_reply] 平台 {platform_id or '?'} 取群列表失败: {exc}"
+                )
+                continue
+            changed += self.groups.merge_api_groups(
+                platform_id, parse_group_list(result)
+            )
+        self.groups.mark_refreshed()
+        return changed
 
     # ------------------------------------------------------------------
     # 自动回复
@@ -375,7 +534,14 @@ class KeywordReplyPlugin(Star):
         return f"「{rule['keyword']}」已{'启用' if rule.get('enabled') else '停用'}"
 
     async def terminate(self):
+        for task in list(self._group_name_tasks.values()):
+            task.cancel()
+        self._group_name_tasks.clear()
         try:
             await self.store.flush()
         except Exception as exc:
             logger.warning(f"[keyword_reply] 退出前保存失败: {exc}")
+        try:
+            await asyncio.to_thread(self.groups.flush)
+        except Exception as exc:
+            logger.warning(f"[keyword_reply] 退出前保存群名缓存失败: {exc}")

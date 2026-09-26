@@ -40,7 +40,7 @@
     "description": "只在这些会话生效（白名单）",
     "type": "list",
     "default": [],
-    "hint": "填群号或 unified_msg_origin（如 339466990 或 napcat:GroupMessage:339466990），可多个。留空 = 所有会话都生效。"
+    "hint": "填群号或 unified_msg_origin（如 339466990 或 napcat:GroupMessage:339466990），可多个。留空 = 所有会话都生效。群号可以在插件面板「选择群…」里按群名找到后直接复制。"
   },
   "blacklist": {
     "description": "这些会话不生效（黑名单）",
