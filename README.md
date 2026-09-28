@@ -7,6 +7,8 @@
 | 活动地址 | 精准匹配 | 一个活动地址 | MD格式 |
 | 在吗 | 模糊匹配 | 在的，{sender}，有什么事？ | 文本 |
 
+> 更新日志见 [Releases](https://github.com/Lianzy-Baimiao/astrbot_plugin_keyword_reply/releases)。
+
 ## 安装
 
 把整个 `astrbot_plugin_keyword_reply` 目录放进 `AstrBot/data/plugins/`，重启 AstrBot。
