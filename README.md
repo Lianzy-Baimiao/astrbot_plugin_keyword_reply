@@ -9,6 +9,27 @@
 
 > 更新日志见 [Releases](https://github.com/Lianzy-Baimiao/astrbot_plugin_keyword_reply/releases)。
 
+## Web 面板首页预览
+
+支持右上角一键切换 **浅色 / 深色**，也可在「界面外观」中选择跟随 AstrBot；未提供宿主主题时默认浅色。主题及紧凑布局偏好保存在当前浏览器，手机窄屏下自动调整布局，宽表格可横向滚动。
+
+- 页面导航：总览、规则管理与界面外观；保留匹配测试和规则导入 / 导出。
+- 统一统计卡片标签与数值排版、复选框及筛选工具栏对齐。
+- 使用本地 HTML / CSS / JavaScript，无需前端构建或外部图标字体；通过 AstrBot Plugin Pages 桥接访问后端。
+
+**浅色首页**
+
+![Web 面板浅色首页](docs/images/web-panel-light.png)
+
+<details>
+<summary>查看深色首页</summary>
+
+![Web 面板深色首页](docs/images/web-panel-dark.png)
+
+</details>
+
+> 预览图来自本地浏览器测试，使用模拟数据，不代表真实机器人运行状态。更新日志见各仓库 Releases。
+
 ## 安装
 
 把整个 `astrbot_plugin_keyword_reply` 目录放进 `AstrBot/data/plugins/`，重启 AstrBot。
@@ -28,9 +49,9 @@ AstrBot WebUI → 插件 → 关键字回复 → 打开面板。
 - 启用 / 停用单条规则（停用不删数据）
 - **试一句话**：输入一段文本，看它命中哪几条规则、实际会回哪条、占位符渲染成什么样
 - 导入 / 导出 JSON，方便备份和在多个 bot 之间搬规则
-- 跟随 AstrBot WebUI 的明暗主题
+- 一键切换浅色 / 深色，或跟随 AstrBot WebUI 主题；偏好自动记忆
 
-面板前端是单个 `pages/keyword-reply/index.html`，原生 JS，不需要构建步骤。数据通过
+面板前端位于 `pages/keyword-reply/`，由 `index.html`、`style.css`、`shell.js` 和 `app.js` 组成，使用原生 JS，不需要构建步骤。数据通过
 `window.AstrBotPluginPage` 桥接调用后端接口，不自己拼 URL、不带 token。
 
 ## 群名是怎么来的
@@ -203,3 +224,10 @@ python tests/test_main_smoke.py
 `page.py` 同时兼容 AstrBot >= 4.26 的 `astrbot.api.web` 和更早版本的裸 quart，两套
 API 的 `request.query` / `request.args`、`request.json()` / `request.get_json()` 差异
 在内部包了一层。
+
+
+### Web 面板更新
+
+- 独立工作台布局，提供浅色 / 深色切换、主题记忆及窄屏适配。
+- 统一运行速览标签与数值的对齐，移除标签前的小方块装饰。
+- 统一复选框与筛选工具栏对齐，保留原有业务接口。
