@@ -35,6 +35,7 @@ from keyword_reply.groups import (
 )
 from keyword_reply.page import KeywordPageController
 from keyword_reply.rules import (
+    FORMAT_IMAGE,
     FORMAT_MARKDOWN,
     describe_rule,
     format_label,
@@ -60,7 +61,7 @@ HELP_TEXT = """关键字回复
 
 例：/关键字 添加 活动地址|精准匹配|一个活动地址|MD格式
 匹配类型：精准匹配 / 模糊匹配 / 前缀匹配 / 后缀匹配 / 正则匹配
-格式：文本 / MD格式
+格式：文本 / MD格式 / 图片（回复填图片链接或本地路径，每行一张）
 回复里可用占位符：{sender} {group} {keyword} {date} {time} {datetime}"""
 
 
@@ -379,6 +380,14 @@ class KeywordReplyPlugin(Star):
             },
         )
         if not reply.strip():
+            return
+
+        if rule.get("format") == FORMAT_IMAGE:
+            # 图片格式：回复里每行一张图（http(s) 链接或本地文件路径），直接发不渲染
+            for line in reply.splitlines():
+                src = line.strip()
+                if src:
+                    yield event.image_result(src)
             return
 
         if rule.get("format") == FORMAT_MARKDOWN and self.markdown_mode == "image":

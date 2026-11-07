@@ -97,12 +97,14 @@ _MATCH_SPECIFICITY: dict[str, int] = {
 
 FORMAT_TEXT = "text"
 FORMAT_MARKDOWN = "markdown"
+FORMAT_IMAGE = "image"
 
-FORMAT_TYPES: tuple[str, ...] = (FORMAT_TEXT, FORMAT_MARKDOWN)
+FORMAT_TYPES: tuple[str, ...] = (FORMAT_TEXT, FORMAT_MARKDOWN, FORMAT_IMAGE)
 
 FORMAT_LABELS: dict[str, str] = {
     FORMAT_TEXT: "文本",
     FORMAT_MARKDOWN: "MD格式",
+    FORMAT_IMAGE: "图片",
 }
 
 _FORMAT_ALIASES: dict[str, str] = {
@@ -118,6 +120,11 @@ _FORMAT_ALIASES: dict[str, str] = {
     "md格式": FORMAT_MARKDOWN,
     "markdown格式": FORMAT_MARKDOWN,
     "富文本": FORMAT_MARKDOWN,
+    "img": FORMAT_IMAGE,
+    "picture": FORMAT_IMAGE,
+    "图片": FORMAT_IMAGE,
+    "图片格式": FORMAT_IMAGE,
+    "图": FORMAT_IMAGE,
 }
 
 # ---------------------------------------------------------------------------

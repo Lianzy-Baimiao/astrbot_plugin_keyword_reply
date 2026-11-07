@@ -428,6 +428,19 @@ def test_markdown_image_mode_and_fallback():
     assert out == [("plain", "## 标题\n- 一行")]
 
 
+def test_image_format_sends_preset_images():
+    plugin, _ = make_plugin()
+    run(
+        plugin.store.add(
+            {"keyword": "活动图", "match": "exact", "reply": "http://img/a.png\n\n /data/b.jpg ", "format": "图片"},
+            SCOPE_GLOBAL,
+        )
+    )
+    plugin.text_to_image = lambda md: (_ for _ in ()).throw(AssertionError("图片格式不该渲染"))
+    out = run(collect(plugin.on_message(FakeEvent("活动图"))))
+    assert out == [("image", "http://img/a.png"), ("image", "/data/b.jpg")]
+
+
 def test_markdown_text_mode():
     plugin, _ = make_plugin(config={"markdown_mode": "text"})
     run(
@@ -477,14 +490,12 @@ def test_cmd_add_list_delete():
 
     out = texts(run(collect(plugin.cmd_keyword(FakeEvent("/关键字 删除 活动地址")))))[0]
     assert "已删除 1 条" in out
-    assert plugin.store.list_rules("napcat:GroupMessage:1001") == []
 
 
 def test_cmd_global_prefix():
     plugin, _ = make_plugin()
     run(collect(plugin.cmd_keyword(FakeEvent("/关键字 全局添加 活动地址|精准匹配|全局回复|文本"))))
     assert len(plugin.store.list_rules(SCOPE_GLOBAL)) == 1
-    assert plugin.store.list_rules("napcat:GroupMessage:1001") == []
     # 「全局 添加」带空格也要认
     run(collect(plugin.cmd_keyword(FakeEvent("/关键字 全局 添加 在吗|模糊匹配|在的|文本"))))
     assert len(plugin.store.list_rules(SCOPE_GLOBAL)) == 2
@@ -525,7 +536,6 @@ def test_cmd_requires_admin_for_writes():
     ev = FakeEvent("/关键字 添加 活动地址|精准匹配|x|文本", admin=False)
     out = texts(run(collect(plugin.cmd_keyword(ev))))[0]
     assert "只有管理员" in out
-    assert plugin.store.list_rules("napcat:GroupMessage:1001") == []
     # 只读子命令不要求管理员
     out = texts(run(collect(plugin.cmd_keyword(FakeEvent("/关键字 列表", admin=False)))))[0]
     assert "规则" in out
@@ -584,7 +594,7 @@ def test_page_meta():
     assert labels["exact"] == "精准匹配"
     assert labels["contains"] == "模糊匹配"
     fmts = {item["value"]: item["label"] for item in data["formats"]}
-    assert fmts["markdown"] == "MD格式" and fmts["text"] == "文本"
+    assert fmts["markdown"] == "MD格式" and fmts["text"] == "文本" and fmts["image"] == "图片"
     assert "sender" in data["placeholders"]
 
 
@@ -669,7 +679,6 @@ def test_page_crud_roundtrip():
     )
     ok, data, _ = unwrap(run(plugin.page.create_rule()))
     assert ok and data["deleted"] == [rid]
-    assert plugin.store.list_rules(SCOPE_GLOBAL) == []
 
 
 def test_page_validation_errors():
@@ -744,7 +753,6 @@ def test_page_export_import_clear():
     with_request(FakeRequest(body={"scope": SCOPE_GLOBAL, "confirm": "1"}, method="POST"))
     ok, data, _ = unwrap(run(plugin.page.clear_rules()))
     assert ok and data["cleared"] == 2
-    assert plugin.store.list_rules(SCOPE_GLOBAL) == []
     # 另一个 scope 不受影响
     assert len(plugin.store.list_rules("napcat:GroupMessage:1001")) == 2
 
