@@ -89,6 +89,11 @@
       <div class="field grow">
         <label for="fReply">回复</label>
         <textarea id="fReply" placeholder="例：一个活动地址"></textarea>
+        <div class="upload-row">
+          <button type="button" id="fUpload">上传图片</button>
+          <input type="file" id="fUploadFile" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple hidden>
+          <span class="hint">选本地图片上传到机器人，自动填入路径并把格式切成「图片」（每行一张，最大 10MB）</span>
+        </div>
       </div>
     </div>
     <div class="row">

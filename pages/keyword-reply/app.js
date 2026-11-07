@@ -312,6 +312,48 @@
     }).catch(fail);
   }
 
+  // ---------- 上传预设图片 ----------
+
+  function readAsDataURL(file) {
+    return new Promise(function (resolve, reject) {
+      var r = new FileReader();
+      r.onload = function () { resolve(r.result); };
+      r.onerror = function () { reject(new Error("读取文件失败")); };
+      r.readAsDataURL(file);
+    });
+  }
+
+  function uploadImages(files) {
+    var list = Array.prototype.slice.call(files || []);
+    if (!list.length) return;
+    var btn = byId("fUpload");
+    btn.disabled = true;
+    var chain = Promise.resolve();
+    var done = 0;
+    list.forEach(function (file) {
+      chain = chain.then(function () {
+        if (file.size > 10 * 1024 * 1024) throw new Error(file.name + " 超过 10MB");
+        return readAsDataURL(file).then(function (dataUrl) {
+          return apiPost("page/upload-image", { name: file.name, data: dataUrl });
+        }).then(function (d) {
+          var box = byId("fReply");
+          var cur = box.value.replace(/\s+$/, "");
+          box.value = (cur ? cur + "\n" : "") + d.path;
+          byId("fFormat").value = "image";
+          done++;
+        });
+      });
+    });
+    chain.then(function () {
+      toast("已上传 " + done + " 张图片");
+    }).catch(function (e) {
+      toast((e && e.message) || "上传失败", true);
+    }).then(function () {
+      btn.disabled = false;
+      byId("fUploadFile").value = "";
+    });
+  }
+
   // ---------- 编辑弹窗 ----------
 
   function openEdit(rule) {
@@ -462,6 +504,8 @@
   // ---------- 绑定 ----------
 
   function bind() {
+    byId("fUpload").addEventListener("click", function () { byId("fUploadFile").click(); });
+    byId("fUploadFile").addEventListener("change", function () { uploadImages(this.files); });
     byId("tbody").addEventListener("click", onTableClick);
     byId("searchBox").addEventListener("input", renderRows);
     byId("scopeSel").addEventListener("change", function () {

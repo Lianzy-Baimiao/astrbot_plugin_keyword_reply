@@ -217,3 +217,5 @@ label:has(> input[type="checkbox"]) { display: inline-flex; align-items: center;
 
 .stats .stat .n { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-variant-numeric: tabular-nums; }
 @media (min-width: 1101px) { .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+.upload-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }

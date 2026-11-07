@@ -12,7 +12,11 @@ _query_* / _read_json，让上层 handler 只写一遍。
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
+from pathlib import Path
 from typing import Any, Callable
 
 try:  # AstrBot >= 4.26
@@ -105,6 +109,7 @@ class KeywordPageController:
             ("/page/test", self.test_match, ["POST"], "关键字回复：试一句话看命中哪条"),
             ("/page/export", self.export_rules, ["GET"], "关键字回复：导出规则"),
             ("/page/import", self.import_rules, ["POST"], "关键字回复：导入规则"),
+            ("/page/upload-image", self.upload_image, ["POST"], "关键字回复：上传预设图片"),
         ]
         for path, handler, methods, desc in routes:
             try:
@@ -480,6 +485,52 @@ class KeywordPageController:
         if result["failed"]:
             message += f"，{len(result['failed'])} 条被跳过"
         return self._ok(result, message)
+
+
+    # ------------------------------------------------------------------
+    # 上传预设图片：前端读成 base64 用 apiPost 传上来，存到插件数据目录 images/ 下
+    # ------------------------------------------------------------------
+
+    MAX_IMAGE_BYTES = 10 * 1024 * 1024
+    _IMAGE_MAGIC = (
+        (bytes.fromhex("89504e470d0a1a0a"), "png"),
+        (bytes.fromhex("ffd8ff"), "jpg"),
+        (b"GIF87a", "gif"),
+        (b"GIF89a", "gif"),
+        (b"BM", "bmp"),
+    )
+
+    @classmethod
+    def _image_ext(cls, data: bytes) -> str:
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "webp"
+        for magic, ext in cls._IMAGE_MAGIC:
+            if data.startswith(magic):
+                return ext
+        return ""
+
+    async def upload_image(self) -> Any:
+        _, payload = await self._read_json_with_method()
+        raw = str(payload.get("data", "") or "")
+        if "," in raw and raw.startswith("data:"):
+            raw = raw.split(",", 1)[1]
+        try:
+            data = base64.b64decode(raw, validate=True)
+        except (ValueError, binascii.Error):
+            return self._err("图片数据无效")
+        if not data:
+            return self._err("没有收到图片")
+        if len(data) > self.MAX_IMAGE_BYTES:
+            return self._err("图片太大了，最大 10MB")
+        ext = self._image_ext(data)
+        if not ext:
+            return self._err("只支持 png / jpg / gif / webp / bmp 图片")
+        folder = Path(self.store.path).parent / "images"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{hashlib.sha1(data).hexdigest()[:16]}.{ext}"
+        if not target.exists():
+            target.write_bytes(data)
+        return self._ok({"path": str(target.resolve())}, "图片已上传")
 
 
 def _log_warn(message: str) -> None:

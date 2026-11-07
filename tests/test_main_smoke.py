@@ -585,6 +585,26 @@ def unwrap(resp):
     return False, {}, payload.get("message", "")
 
 
+def test_page_upload_image():
+    import base64
+
+    plugin, _ = make_plugin()
+    png = bytes.fromhex("89504e470d0a1a0a") + b"fake-png-body"
+    data_url = "data:image/png;base64," + base64.b64encode(png).decode()
+    with_request(FakeRequest(body={"name": "a.png", "data": data_url}, method="POST"))
+    ok, data, _ = unwrap(run(plugin.page.upload_image()))
+    assert ok and data["path"].endswith(".png")
+    with open(data["path"], "rb") as fh:
+        assert fh.read() == png
+    assert os.path.basename(os.path.dirname(data["path"])) == "images"
+
+    # 非图片、坏 base64 都要拒
+    with_request(FakeRequest(body={"data": base64.b64encode(b"hello").decode()}, method="POST"))
+    assert unwrap(run(plugin.page.upload_image()))[0] is False
+    with_request(FakeRequest(body={"data": "@@@"}, method="POST"))
+    assert unwrap(run(plugin.page.upload_image()))[0] is False
+
+
 def test_page_meta():
     plugin, _ = make_plugin()
     with_request(FakeRequest())
