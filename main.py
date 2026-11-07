@@ -22,6 +22,9 @@ from typing import Any
 _PLUGIN_ROOT = Path(__file__).resolve().parent
 if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
+# 在线升级/重载时 sys.modules 里还留着旧版 keyword_reply，不清掉会 import 到旧代码
+for _mod in [m for m in sys.modules if m == "keyword_reply" or m.startswith("keyword_reply.")]:
+    del sys.modules[_mod]
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
